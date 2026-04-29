@@ -1,0 +1,1130 @@
+<script>
+  const state = {
+    user: null,
+    projects: [],
+    activeProject: null,
+    deletedProjects: [],
+    notificationSettings: {},
+    auditLogs: [],
+    deletedRecords: null,
+    portfolioReport: [],
+    serverDate: '',
+    view: 'gantt',
+    ganttScale: 'day'
+  };
+
+  function boot() {
+    google.script.run
+      .withSuccessHandler((data) => {
+        Object.assign(state, data);
+        render();
+      })
+      .withFailureHandler(renderError)
+      .getAppBootstrap();
+  }
+
+  function setupSample() {
+    renderLoading('サンプルデータを作成しています');
+    google.script.run.withSuccessHandler((data) => {
+      Object.assign(state, data);
+      render();
+    }).withFailureHandler(renderError).setupSampleSpreadsheet();
+  }
+
+  function openProject(projectId) {
+    renderLoading('プロジェクトを読み込んでいます');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      render();
+    }).withFailureHandler(renderError).getProject(projectId);
+  }
+
+  function setView(view) {
+    state.view = view;
+    if (view === 'audit') return loadAuditLogs();
+    if (view === 'restore') return loadDeletedRecords();
+    render();
+  }
+
+  function setGanttScale(scale) {
+    state.ganttScale = scale;
+    render();
+  }
+
+  function render() {
+    if (!state.activeProject) {
+      document.getElementById('app').innerHTML = `
+        <div class="empty-state">
+          <h1>Progress Board</h1>
+          <p>表示できるプロジェクトがありません。</p>
+          <button class="primary-button" onclick="setupSample()">初期シートを作成</button>
+          <button class="ghost-button" onclick="openProjectModal()">プロジェクト作成</button>
+        </div>
+        <div id="modal-root"></div>
+      `;
+      return;
+    }
+
+    const detail = state.activeProject;
+    const summary = detail.summary;
+    const project = detail.project;
+
+    document.getElementById('app').innerHTML = `
+      <div class="layout">
+        <aside class="sidebar">
+          <div class="brand">
+            <div class="brand-icon">P</div>
+            <div><h1>Progress Board</h1><span>Google Workspace MVP</span></div>
+          </div>
+          <button class="primary-button sidebar-action" onclick="openProjectModal()">プロジェクト作成</button>
+          ${state.deletedProjects && state.deletedProjects.length ? `<button class="ghost-button sidebar-action" onclick="openDeletedProjectModal()">削除済みPJ</button>` : ''}
+          <div class="project-list">
+            ${state.projects.map((item) => `
+              <button class="project-button ${item.project_id === project.project_id ? 'active' : ''}" onclick="openProject('${escapeAttr(item.project_id)}')">
+                <strong>${escapeHtml(item.project_name)}</strong>
+                <span>${escapeHtml(item.status)} / ${escapeHtml(item.client_name)}</span>
+              </button>
+            `).join('')}
+          </div>
+        </aside>
+        <main class="main">
+          <header class="topbar">
+            <div>
+              <div class="eyebrow">${escapeHtml(project.client_name)}</div>
+              <h1 class="title">${escapeHtml(project.project_name)}</h1>
+              <div class="meta">
+                <span class="pill">${escapeHtml(project.status)}</span>
+                <span class="pill">${escapeHtml(project.start_date)} - ${escapeHtml(project.end_date)}</span>
+                <span class="pill">Owner ${escapeHtml(project.owner_email)}</span>
+              </div>
+            </div>
+            <div class="user-chip"><span>Signed in</span><strong>${escapeHtml(state.user.email)}</strong></div>
+          </header>
+
+          <section class="summary-grid">
+            ${metric('全体進捗', summary.progress + '%')}
+            ${metric('フェーズ', summary.phaseCount)}
+            ${metric('タスク', summary.taskCount)}
+            ${metric('完了', summary.doneTaskCount)}
+            ${metric('遅延', summary.delayedTaskCount)}
+            ${metric('課題', summary.openIssueCount)}
+          </section>
+
+          <div class="toolbar">
+            <div class="tabs">
+              ${tabButton('gantt', 'ガント')}
+              ${tabButton('phases', 'フェーズ')}
+              ${tabButton('tasks', 'タスク')}
+              ${tabButton('issues', '課題')}
+              ${tabButton('members', 'メンバー')}
+              ${tabButton('settings', '通知')}
+              ${tabButton('report', '横断')}
+              ${tabButton('restore', '復元')}
+              ${tabButton('audit', '監査')}
+            </div>
+            <div class="actions">
+              <button class="ghost-button" onclick="openProjectModal(true)">PJ編集</button>
+              <button class="ghost-button danger-text" onclick="deleteProject()">PJ削除</button>
+              <button class="ghost-button" onclick="exportCsv()">CSV</button>
+              <button class="primary-button" onclick="openPhaseModal()">フェーズ追加</button>
+              <button class="primary-button" onclick="openTaskModal()">タスク追加</button>
+              <button class="primary-button" onclick="openIssueModal()">課題登録</button>
+            </div>
+          </div>
+
+          ${renderActivePanel(detail)}
+        </main>
+      </div>
+      <div id="modal-root"></div>
+    `;
+  }
+
+  function renderActivePanel(detail) {
+    if (state.view === 'phases') return renderPhasePanel(detail);
+    if (state.view === 'tasks') return renderTaskPanel(detail);
+    if (state.view === 'issues') return renderIssuePanel(detail);
+    if (state.view === 'members') return renderMemberPanel(detail);
+    if (state.view === 'settings') return renderSettingsPanel(detail);
+    if (state.view === 'report') return renderReportPanel();
+    if (state.view === 'restore') return renderRestorePanel();
+    if (state.view === 'audit') return renderAuditPanel();
+    return renderGanttPanel(detail);
+  }
+
+  function tabButton(view, label) {
+    return `<button class="tab ${state.view === view ? 'active' : ''}" onclick="setView('${view}')">${label}</button>`;
+  }
+
+  function metric(label, value) {
+    return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+  }
+
+  function renderGanttPanel(detail) {
+    return `
+      <section class="section">
+        <div class="section-header">
+          <h2>予定 / 実績ガントチャート</h2>
+          <div class="segmented">${scaleButton('day', '日')}${scaleButton('week', '週')}${scaleButton('month', '月')}</div>
+        </div>
+        ${renderGantt(detail)}
+      </section>
+    `;
+  }
+
+  function scaleButton(scale, label) {
+    return `<button class="${state.ganttScale === scale ? 'active' : ''}" onclick="setGanttScale('${scale}')">${label}</button>`;
+  }
+
+  function renderGantt(detail) {
+    const range = getDateRange(detail.project.start_date, detail.project.end_date, state.ganttScale);
+    const rows = [];
+    detail.phases.forEach((phase) => {
+      rows.push({ label: phase.phase_name, item: phase, isPhase: true });
+      detail.tasks
+        .filter((task) => task.phase_id === phase.phase_id)
+        .forEach((task) => rows.push({ label: '  ' + task.task_name, item: task, isPhase: false }));
+    });
+    const width = state.ganttScale === 'day' ? 28 : state.ganttScale === 'week' ? 54 : 76;
+
+    return `
+      <div class="gantt">
+        <div style="position:relative;">
+          <div class="gantt-grid" style="--days:${range.length}; --cell:${width}px">
+            <div class="gantt-label date-head">項目</div>
+            ${range.map((slot) => `<div class="gantt-cell date-head ${slot.start <= state.serverDate && state.serverDate <= slot.end ? 'today' : ''}">${escapeHtml(slot.label)}</div>`).join('')}
+            ${rows.map((row) => renderGanttRow(row, range)).join('')}
+          </div>
+          ${renderGanttDependencyLines(detail, range, rows, width)}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderGanttRow(row, range) {
+    const item = row.item;
+    const type = item.phase_id ? 'task' : 'phase';
+    const id = item.task_id || item.phase_id;
+    const isDelayed = item.planned_end && item.planned_end < state.serverDate && Number(item.progress_percent || 0) < 100;
+    return `
+      <div class="gantt-label ${row.isPhase ? 'gantt-phase-label' : 'gantt-task-label'}">${escapeHtml(row.label)}</div>
+      ${range.map((slot) => {
+        const planned = item.planned_start <= slot.end && item.planned_end >= slot.start;
+        const actualEnd = item.actual_end || state.serverDate;
+        const actual = item.actual_start && item.actual_start <= slot.end && actualEnd >= slot.start;
+        return `<div class="gantt-cell" ondragover="event.preventDefault()" ondrop="dropSchedule(event, '${type}', '${escapeAttr(id)}', '${slot.start}')">${planned ? `<span class="bar planned ${isDelayed ? 'delayed' : ''}" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'move')"><i class="resize-handle left" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'start')"></i><i class="resize-handle right" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'end')"></i></span>` : ''}${actual ? '<span class="bar actual"></span>' : ''}</div>`;
+      }).join('')}
+    `;
+  }
+
+  function renderPhasePanel(detail) {
+    return `
+      <section class="section">
+        <div class="section-header"><h2>フェーズ管理</h2><button class="primary-button" onclick="openPhaseModal()">フェーズ追加</button></div>
+        <div class="phase-board">${detail.phases.map((phase) => renderPhaseCard(phase, detail.tasks)).join('')}</div>
+      </section>
+    `;
+  }
+
+  function renderPhaseCard(phase, tasks) {
+    const phaseTasks = tasks.filter((task) => task.phase_id === phase.phase_id);
+    const delayed = phaseTasks.filter((task) => task.planned_end < state.serverDate && Number(task.progress_percent || 0) < 100).length;
+    return `
+      <article class="phase-card">
+        <h3>${escapeHtml(phase.phase_name)}</h3>
+        <div class="progress-track"><div class="progress-fill" style="--progress:${Number(phase.progress_percent || 0)}%"></div></div>
+        <p>${escapeHtml(phase.progress_percent || 0)}% / ${escapeHtml(phase.status)}</p>
+        <p class="muted-text">${escapeHtml(phase.planned_start)} - ${escapeHtml(phase.planned_end)}</p>
+        <div class="row-actions">
+          <span class="status ${delayed ? 'delay' : Number(phase.progress_percent) >= 100 ? 'done' : ''}">${delayed ? delayed + '件遅延' : phaseTasks.length + ' tasks'}</span>
+          <span><button class="icon-button" onclick="openPhaseModal('${escapeAttr(phase.phase_id)}')">編集</button><button class="icon-button danger-text" onclick="deletePhase('${escapeAttr(phase.phase_id)}')">削除</button></span>
+        </div>
+      </article>
+    `;
+  }
+
+  function renderTaskPanel(detail) {
+    return `
+      <section class="section">
+        <div class="section-header"><h2>タスク一覧</h2><span class="pill">${detail.tasks.length} tasks</span></div>
+        <div class="section-header compact-header">
+          <div class="actions">
+            <button class="ghost-button" onclick="openBulkMoveModal()">選択タスクを移動</button>
+          </div>
+        </div>
+        ${renderTaskTable(detail)}
+      </section>
+    `;
+  }
+
+  function renderTaskTable(detail) {
+    const phaseById = Object.fromEntries(detail.phases.map((phase) => [phase.phase_id, phase.phase_name]));
+    return `
+      <table class="task-table">
+        <thead><tr><th></th><th>タスク</th><th>フェーズ</th><th>担当</th><th>予定</th><th>進捗</th><th>状態</th><th></th></tr></thead>
+        <tbody>
+          ${detail.tasks.map((task) => {
+            const delayed = task.planned_end < state.serverDate && Number(task.progress_percent || 0) < 100;
+            const blocked = Boolean(task.blocked_reason);
+            const done = Number(task.progress_percent || 0) >= 100;
+            return `
+              <tr>
+                <td><input type="checkbox" class="task-check" value="${escapeAttr(task.task_id)}"></td>
+                <td><strong>${escapeHtml(task.task_name)}</strong>${blocked ? `<br><span class="status blocked">${escapeHtml(task.blocked_reason)}</span>` : ''}</td>
+                <td>${escapeHtml(phaseById[task.phase_id] || '')}</td>
+                <td>${escapeHtml(task.assignee_email)}</td>
+                <td>${escapeHtml(task.planned_start)} - ${escapeHtml(task.planned_end)}</td>
+                <td>${escapeHtml(task.progress_percent || 0)}%</td>
+                <td><span class="status ${delayed ? 'delay' : done ? 'done' : ''}">${escapeHtml(delayed ? '遅延' : task.status)}</span></td>
+                <td>
+                  <button class="icon-button" onclick="openTaskModal('${escapeAttr(task.task_id)}')">編集</button>
+                  <button class="icon-button" onclick="openMoveTaskModal('${escapeAttr(task.task_id)}')">移動</button>
+                  <button class="icon-button danger-text" onclick="deleteTask('${escapeAttr(task.task_id)}')">削除</button>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderIssuePanel(detail) {
+    return `
+      <section class="section">
+        <div class="section-header"><h2>課題一覧</h2><button class="primary-button" onclick="openIssueModal()">課題登録</button></div>
+        <table class="task-table">
+          <thead><tr><th>課題</th><th>重要度</th><th>担当</th><th>期限</th><th>状態</th><th></th></tr></thead>
+          <tbody>
+            ${detail.issues.map((issue) => `
+              <tr>
+                <td><strong>${escapeHtml(issue.title)}</strong></td>
+                <td>${escapeHtml(issue.severity)}</td>
+                <td>${escapeHtml(issue.owner_email)}</td>
+                <td>${escapeHtml(issue.due_date)}</td>
+                <td><span class="status ${issue.status === '完了' ? 'done' : issue.due_date < state.serverDate ? 'delay' : ''}">${escapeHtml(issue.status)}</span></td>
+                <td><button class="icon-button" onclick="openIssueModal('${escapeAttr(issue.issue_id)}')">編集</button><button class="icon-button" onclick="openIssueCommentModal('${escapeAttr(issue.issue_id)}')">コメント</button><button class="icon-button danger-text" onclick="deleteIssue('${escapeAttr(issue.issue_id)}')">削除</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }
+
+  function renderMemberPanel(detail) {
+    return `
+      <section class="section">
+        <div class="section-header"><h2>メンバー管理</h2><button class="primary-button" onclick="openMemberModal()">メンバー追加</button></div>
+        <table class="task-table">
+          <thead><tr><th>メール</th><th>ロール</th><th>状態</th><th></th></tr></thead>
+          <tbody>
+            ${detail.members.map((member) => `
+              <tr>
+                <td><strong>${escapeHtml(member.user_email)}</strong></td>
+                <td>${escapeHtml(member.role)}</td>
+                <td><span class="status done">有効</span></td>
+                <td><button class="icon-button" onclick="openMemberModal('${escapeAttr(member.user_email)}')">編集</button><button class="icon-button danger-text" onclick="deactivateMember('${escapeAttr(member.user_email)}')">無効化</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }
+
+  function renderSettingsPanel(detail) {
+    const s = state.notificationSettings || {};
+    return `
+      <section class="section">
+        <div class="section-header">
+          <h2>通知設定</h2>
+          <div class="actions"><button class="ghost-button" onclick="openPreviewModal()">プレビュー送信</button><button class="ghost-button" onclick="installOverdueTrigger()">期限超過通知を有効化</button></div>
+        </div>
+        <form id="notification-form" class="settings-grid template-grid" onsubmit="submitNotificationSettings(event)">
+          <input type="hidden" name="project_id" value="${escapeAttr(detail.project.project_id)}">
+          ${toggle('notify_enabled', '通知全体', s.notify_enabled)}
+          ${toggle('notify_task_create', 'タスク作成', s.notify_task_create)}
+          ${toggle('notify_task_update', 'タスク更新', s.notify_task_update)}
+          ${toggle('notify_task_delete', 'タスク削除', s.notify_task_delete)}
+          ${toggle('notify_issue_change', '課題更新', s.notify_issue_change)}
+          ${toggle('notify_member_change', 'メンバー更新', s.notify_member_change)}
+          ${toggle('notify_overdue_daily', '期限超過の定期通知', s.notify_overdue_daily)}
+          <label>通知対象<select name="notify_recipients">${options(['assignee_admins', 'admins', 'all'], s.notify_recipients || 'assignee_admins')}</select></label>
+          <label>定期通知の時刻<input name="notify_overdue_hour" type="number" min="0" max="23" value="${escapeAttr(s.notify_overdue_hour || '9')}"></label>
+          <label class="wide">タスク通知 件名<input name="notify_task_subject_template" value="${escapeAttr(s.notify_task_subject_template || '')}"></label>
+          <label class="wide">タスク通知 本文<textarea name="notify_task_body_template">${escapeHtml(s.notify_task_body_template || '')}</textarea></label>
+          <label class="wide">課題通知 件名<input name="notify_issue_subject_template" value="${escapeAttr(s.notify_issue_subject_template || '')}"></label>
+          <label class="wide">課題通知 本文<textarea name="notify_issue_body_template">${escapeHtml(s.notify_issue_body_template || '')}</textarea></label>
+          <label class="wide">期限超過通知 件名<input name="notify_overdue_subject_template" value="${escapeAttr(s.notify_overdue_subject_template || '')}"></label>
+          <label class="wide">期限超過通知 本文<textarea name="notify_overdue_body_template">${escapeHtml(s.notify_overdue_body_template || '')}</textarea></label>
+          <p class="wide muted-text">利用できる例: {{task_name}}, {{issue_title}}, {{project_name}}, {{actor_email}}, {{overdue_tasks}}, {{overdue_issues}}</p>
+          <div class="modal-actions"><button class="primary-button">保存</button></div>
+        </form>
+      </section>
+    `;
+  }
+
+  function toggle(name, label, value) {
+    return `<label>${label}<select name="${name}">${options(['TRUE', 'FALSE'], value || 'TRUE')}</select></label>`;
+  }
+
+  function renderRestorePanel() {
+    const data = state.deletedRecords || { phases: [], tasks: [], issues: [] };
+    return `
+      <section class="section">
+        <div class="section-header"><h2>削除済みデータ</h2><button class="ghost-button" onclick="loadDeletedRecords()">再読み込み</button></div>
+        ${deletedProjectTable()}
+        ${deletedTable('フェーズ', 'phase', data.phases, 'phase_id', 'phase_name')}
+        ${deletedTable('タスク', 'task', data.tasks, 'task_id', 'task_name')}
+        ${deletedTable('課題', 'issue', data.issues, 'issue_id', 'title')}
+      </section>
+    `;
+  }
+
+  function renderReportPanel() {
+    if (!state.portfolioReport.length) {
+      loadPortfolioReport(false);
+    }
+    const totals = state.portfolioReport.reduce((sum, row) => {
+      sum.tasks += Number(row.taskCount || 0);
+      sum.delays += Number(row.delayedTaskCount || 0);
+      sum.issues += Number(row.openIssueCount || 0);
+      return sum;
+    }, { tasks: 0, delays: 0, issues: 0 });
+    return `
+      <section class="section">
+        <div class="section-header"><h2>プロジェクト横断レポート</h2><button class="ghost-button" onclick="loadPortfolioReport(true)">再集計</button></div>
+        <section class="summary-grid" style="padding:16px;margin:0;">
+          ${metric('PJ数', state.portfolioReport.length)}
+          ${metric('総タスク', totals.tasks)}
+          ${metric('総遅延', totals.delays)}
+          ${metric('未完了課題', totals.issues)}
+        </section>
+        <table class="task-table">
+          <thead><tr><th>プロジェクト</th><th>顧客/部門</th><th>状態</th><th>進捗</th><th>遅延</th><th>課題</th><th>期間</th></tr></thead>
+          <tbody>
+            ${state.portfolioReport.map((row) => `<tr><td><strong>${escapeHtml(row.project_name)}</strong></td><td>${escapeHtml(row.client_name)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.progress)}%</td><td>${escapeHtml(row.delayedTaskCount)}</td><td>${escapeHtml(row.openIssueCount)}</td><td>${escapeHtml(row.start_date)} - ${escapeHtml(row.end_date)}</td></tr>`).join('') || '<tr><td colspan="7">データがありません。</td></tr>'}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }
+
+  function deletedProjectTable() {
+    const rows = state.deletedProjects || [];
+    return `
+      <div class="subsection">
+        <h3>プロジェクト</h3>
+        <table class="task-table">
+          <thead><tr><th>名称</th><th>ID</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map((row) => `<tr><td>${escapeHtml(row.project_name)}</td><td>${escapeHtml(row.project_id)}</td><td><button class="icon-button" onclick="restoreProject('${escapeAttr(row.project_id)}')">復元</button></td></tr>`).join('') || '<tr><td colspan="3">削除済みプロジェクトはありません。</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function deletedTable(title, type, rows, idKey, nameKey) {
+    return `
+      <div class="subsection">
+        <h3>${title}</h3>
+        <table class="task-table">
+          <thead><tr><th>名称</th><th>ID</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map((row) => `<tr><td>${escapeHtml(row[nameKey])}</td><td>${escapeHtml(row[idKey])}</td><td><button class="icon-button" onclick="restoreRecord('${type}', '${escapeAttr(row[idKey])}')">復元</button></td></tr>`).join('') || '<tr><td colspan="3">削除済みデータはありません。</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderAuditPanel() {
+    return `
+      <section class="section">
+        <div class="section-header"><h2>監査ログ</h2><div class="actions"><button class="ghost-button" onclick="exportAuditCsv()">監査CSV</button><button class="ghost-button" onclick="loadAuditLogs()">再読み込み</button></div></div>
+        <table class="task-table">
+          <thead><tr><th>日時</th><th>ユーザー</th><th>操作</th><th>対象</th><th>ID</th></tr></thead>
+          <tbody>
+            ${state.auditLogs.map((log) => `<tr><td>${escapeHtml(log.timestamp)}</td><td>${escapeHtml(log.user_email)}</td><td><span class="status">${escapeHtml(log.action)}</span></td><td>${escapeHtml(log.target_type)}</td><td>${escapeHtml(log.target_id)}</td></tr>`).join('') || '<tr><td colspan="5">ログがありません。</td></tr>'}
+          </tbody>
+        </table>
+      </section>
+    `;
+  }
+
+  function openProjectModal(editCurrent) {
+    const project = editCurrent && state.activeProject ? state.activeProject.project : {};
+    const today = state.serverDate || new Date().toISOString().slice(0, 10);
+    showModal(editCurrent ? 'プロジェクト編集' : 'プロジェクト作成', `
+      <form class="form-grid" onsubmit="submitProject(event)">
+        <input type="hidden" name="project_id" value="${escapeAttr(project.project_id || '')}">
+        <label>プロジェクト名<input name="project_name" required maxlength="120" value="${escapeAttr(project.project_name || '')}"></label>
+        <label>顧客/部門<input name="client_name" required maxlength="80" value="${escapeAttr(project.client_name || 'Internal')}"></label>
+        <label>状態<select name="status">${options(['計画中', '進行中', '完了', '保留'], project.status || '計画中')}</select></label>
+        <label>オーナー<input name="owner_email" type="email" value="${escapeAttr(project.owner_email || (state.user ? state.user.email : ''))}"></label>
+        <label>開始日<input name="start_date" required type="date" value="${escapeAttr(project.start_date || today)}"></label>
+        <label>終了日<input name="end_date" required type="date" value="${escapeAttr(project.end_date || today)}"></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
+      </form>
+    `);
+  }
+
+  function openDeletedProjectModal() {
+    showModal('削除済みプロジェクト', deletedProjectTable());
+  }
+
+  function openPhaseModal(phaseId) {
+    const detail = state.activeProject;
+    const phase = detail.phases.find((item) => item.phase_id === phaseId) || {};
+    showModal('フェーズ', `
+      <form class="form-grid" onsubmit="submitPhase(event)">
+        <input type="hidden" name="phase_id" value="${escapeAttr(phase.phase_id || '')}">
+        <input type="hidden" name="project_id" value="${escapeAttr(detail.project.project_id)}">
+        <label>フェーズ名<input name="phase_name" required maxlength="80" value="${escapeAttr(phase.phase_name || '')}"></label>
+        <label>担当<input name="assignee_email" required type="email" value="${escapeAttr(phase.assignee_email || state.user.email)}"></label>
+        <label>予定開始<input name="planned_start" required type="date" value="${escapeAttr(phase.planned_start || detail.project.start_date)}"></label>
+        <label>予定終了<input name="planned_end" required type="date" value="${escapeAttr(phase.planned_end || detail.project.end_date)}"></label>
+        <label>実績開始<input name="actual_start" type="date" value="${escapeAttr(phase.actual_start || '')}"></label>
+        <label>実績終了<input name="actual_end" type="date" value="${escapeAttr(phase.actual_end || '')}"></label>
+        <label>進捗<input name="progress_percent" type="number" min="0" max="100" value="${escapeAttr(phase.progress_percent || '0')}"></label>
+        <label>並び順<input name="sort_order" type="number" min="0" value="${escapeAttr(phase.sort_order || detail.phases.length + 1)}"></label>
+        <label>状態<select name="status">${options(['未着手', '進行中', '完了'], phase.status || '未着手')}</select></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
+      </form>
+    `);
+  }
+
+  function openTaskModal(taskId) {
+    const detail = state.activeProject;
+    const task = detail.tasks.find((item) => item.task_id === taskId) || {};
+    const otherTasks = detail.tasks.filter((t) => t.task_id !== (task.task_id || ''));
+    showModal('タスク', `
+      <form class="form-grid" onsubmit="submitTask(event)">
+        <input type="hidden" name="task_id" value="${escapeAttr(task.task_id || '')}">
+        <label>フェーズ<select name="phase_id" required>${detail.phases.map((phase) => `<option value="${escapeAttr(phase.phase_id)}" ${phase.phase_id === task.phase_id ? 'selected' : ''}>${escapeHtml(phase.phase_name)}</option>`).join('')}</select></label>
+        <label>タスク名<input name="task_name" required maxlength="120" value="${escapeAttr(task.task_name || '')}"></label>
+        <label>担当<input name="assignee_email" required type="email" value="${escapeAttr(task.assignee_email || state.user.email)}"></label>
+        <label>予定開始<input name="planned_start" required type="date" value="${escapeAttr(task.planned_start || detail.project.start_date)}"></label>
+        <label>予定終了<input name="planned_end" required type="date" value="${escapeAttr(task.planned_end || detail.project.end_date)}"></label>
+        <label>実績開始<input name="actual_start" type="date" value="${escapeAttr(task.actual_start || '')}"></label>
+        <label>実績終了<input name="actual_end" type="date" value="${escapeAttr(task.actual_end || '')}"></label>
+        <label>進捗<input name="progress_percent" type="number" min="0" max="100" value="${escapeAttr(task.progress_percent || '0')}"></label>
+        <label>状態<select name="status">${options(['未着手', '進行中', '完了'], task.status || '未着手')}</select></label>
+        <label>優先度<select name="priority">${options(['High', 'Medium', 'Low'], task.priority || 'Medium')}</select></label>
+        <label>先行タスク<select name="depends_on"><option value="">なし</option>${otherTasks.map((t) => `<option value="${escapeAttr(t.task_id)}" ${t.task_id === (task.depends_on || '') ? 'selected' : ''}>${escapeHtml(t.task_name)}</option>`).join('')}</select></label>
+        <label class="wide">ブロッカー<textarea name="blocked_reason" maxlength="300">${escapeHtml(task.blocked_reason || '')}</textarea></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
+      </form>
+    `);
+  }
+
+  function openMoveTaskModal(taskId) {
+    const detail = state.activeProject;
+    const task = detail.tasks.find((item) => item.task_id === taskId);
+    showModal('タスク移動', `
+      <form class="form-grid" onsubmit="submitMoveTask(event)">
+        <input type="hidden" name="task_id" value="${escapeAttr(taskId)}">
+        <label class="wide">移動先フェーズ<select name="phase_id" required>${detail.phases.map((phase) => `<option value="${escapeAttr(phase.phase_id)}" ${task && task.phase_id === phase.phase_id ? 'selected' : ''}>${escapeHtml(phase.phase_name)}</option>`).join('')}</select></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">移動</button></div>
+      </form>
+    `);
+  }
+
+  function openBulkMoveModal() {
+    const ids = Array.from(document.querySelectorAll('.task-check:checked')).map((input) => input.value);
+    if (!ids.length) {
+      alert('移動するタスクを選択してください。');
+      return;
+    }
+    const detail = state.activeProject;
+    showModal('タスク一括移動', `
+      <form class="form-grid" onsubmit="submitBulkMoveTask(event)">
+        <input type="hidden" name="task_ids" value="${escapeAttr(ids.join(','))}">
+        <label class="wide">移動先フェーズ<select name="phase_id" required>${detail.phases.map((phase) => `<option value="${escapeAttr(phase.phase_id)}">${escapeHtml(phase.phase_name)}</option>`).join('')}</select></label>
+        <p class="wide muted-text">${ids.length}件のタスクを移動します。</p>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">移動</button></div>
+      </form>
+    `);
+  }
+
+  function openIssueModal(issueId) {
+    const detail = state.activeProject;
+    const issue = detail.issues.find((item) => item.issue_id === issueId) || {};
+    showModal('課題', `
+      <form class="form-grid" onsubmit="submitIssue(event)">
+        <input type="hidden" name="issue_id" value="${escapeAttr(issue.issue_id || '')}">
+        <input type="hidden" name="project_id" value="${escapeAttr(detail.project.project_id)}">
+        <label class="wide">課題名<input name="title" required maxlength="160" value="${escapeAttr(issue.title || '')}"></label>
+        <label>重要度<select name="severity">${options(['High', 'Medium', 'Low'], issue.severity || 'Medium')}</select></label>
+        <label>状態<select name="status">${options(['未対応', '対応中', '完了'], issue.status || '未対応')}</select></label>
+        <label>担当<input name="owner_email" required type="email" value="${escapeAttr(issue.owner_email || state.user.email)}"></label>
+        <label>期限<input name="due_date" required type="date" value="${escapeAttr(issue.due_date || detail.project.end_date)}"></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
+      </form>
+    `);
+  }
+
+  function openIssueCommentModal(issueId) {
+    const detail = state.activeProject;
+    const issue = detail.issues.find((item) => item.issue_id === issueId);
+    const comments = (detail.issueComments || []).filter((comment) => comment.issue_id === issueId);
+    showModal('課題コメント', `
+      <div class="comment-list">
+        <h3>${escapeHtml(issue ? issue.title : '')}</h3>
+        ${comments.map((comment) => `<div class="comment-item"><strong>${escapeHtml(comment.user_email)}</strong><span>${escapeHtml(comment.created_at)}</span><p>${escapeHtml(comment.comment)}</p></div>`).join('') || '<p class="muted-text">コメントはまだありません。</p>'}
+      </div>
+      <form class="form-grid" onsubmit="submitIssueComment(event)">
+        <input type="hidden" name="issue_id" value="${escapeAttr(issueId)}">
+        <label class="wide">コメント<textarea name="comment" required maxlength="1000"></textarea></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">追加</button></div>
+      </form>
+    `);
+  }
+
+  function openMemberModal(email) {
+    const detail = state.activeProject;
+    const member = detail.members.find((item) => item.user_email === email) || {};
+    showModal('メンバー', `
+      <form class="form-grid" onsubmit="submitMember(event)">
+        <label class="wide">メール<input name="user_email" required type="email" value="${escapeAttr(member.user_email || '')}"></label>
+        <label>ロール<select name="role">${options(['member', 'viewer', 'owner', 'admin'], member.role || 'member')}</select></label>
+        <label>状態<select name="active">${options(['TRUE', 'FALSE'], member.active || 'TRUE')}</select></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
+      </form>
+    `);
+  }
+
+  function submitProject(event) {
+    event.preventDefault();
+    renderModalBusy();
+    google.script.run.withSuccessHandler((data) => {
+      state.projects = data.projects;
+      state.activeProject = data.activeProject;
+      closeModal();
+      render();
+    }).withFailureHandler(renderModalError).saveProject(formToObject(event.target));
+  }
+
+  function submitPhase(event) {
+    event.preventDefault();
+    submitServer('savePhase', formToObject(event.target));
+  }
+
+  function submitTask(event) {
+    event.preventDefault();
+    submitServer('saveTask', formToObject(event.target));
+  }
+
+  function submitMoveTask(event) {
+    event.preventDefault();
+    const data = formToObject(event.target);
+    renderModalBusy();
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      closeModal();
+      state.view = 'tasks';
+      render();
+    }).withFailureHandler(renderModalError).moveTask(data.task_id, data.phase_id);
+  }
+
+  function submitBulkMoveTask(event) {
+    event.preventDefault();
+    const data = formToObject(event.target);
+    const ids = data.task_ids.split(',').filter(Boolean);
+    renderModalBusy();
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      closeModal();
+      state.view = 'tasks';
+      render();
+    }).withFailureHandler(renderModalError).moveTasks(ids, data.phase_id);
+  }
+
+  function submitIssue(event) {
+    event.preventDefault();
+    submitServer('saveIssue', formToObject(event.target));
+  }
+
+  function submitIssueComment(event) {
+    event.preventDefault();
+    renderModalBusy();
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      closeModal();
+      state.view = 'issues';
+      render();
+    }).withFailureHandler(renderModalError).saveIssueComment(formToObject(event.target));
+  }
+
+  function submitMember(event) {
+    event.preventDefault();
+    submitServer('saveMember', state.activeProject.project.project_id, formToObject(event.target));
+  }
+
+  function submitNotificationSettings(event) {
+    event.preventDefault();
+    renderLoading('通知設定を保存しています');
+    google.script.run.withSuccessHandler((settings) => {
+      state.notificationSettings = settings;
+      state.view = 'settings';
+      render();
+    }).withFailureHandler(renderError).saveNotificationSettings(formToObject(event.target));
+  }
+
+  function submitServer(functionName) {
+    const args = Array.prototype.slice.call(arguments, 1);
+    renderModalBusy();
+    const runner = google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      closeModal();
+      render();
+    }).withFailureHandler(renderModalError);
+
+    if (functionName === 'savePhase') runner.savePhase(args[0]);
+    if (functionName === 'saveTask') runner.saveTask(args[0]);
+    if (functionName === 'saveIssue') runner.saveIssue(args[0]);
+    if (functionName === 'saveMember') runner.saveMember(args[0], args[1]);
+  }
+
+  function deleteProject() {
+    if (!confirm('このプロジェクトを削除しますか？データは論理削除として保持されます。')) return;
+    renderLoading('プロジェクトを削除しています');
+    google.script.run.withSuccessHandler((data) => {
+      state.projects = data.projects;
+      state.activeProject = data.activeProject;
+      state.deletedProjects = data.deletedProjects || state.deletedProjects;
+      render();
+    }).withFailureHandler(renderError).deleteProject(state.activeProject.project.project_id);
+  }
+
+  function restoreProject(projectId) {
+    renderLoading('プロジェクトを復元しています');
+    google.script.run.withSuccessHandler((data) => {
+      state.projects = data.projects;
+      state.activeProject = data.activeProject;
+      state.deletedProjects = data.deletedProjects || [];
+      closeModal();
+      render();
+    }).withFailureHandler(renderError).restoreProject(projectId);
+  }
+
+  function deletePhase(phaseId) {
+    if (!confirm('このフェーズを削除しますか？データは論理削除として保持されます。')) return;
+    renderLoading('フェーズを削除しています');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      state.view = 'phases';
+      render();
+    }).withFailureHandler(renderError).deletePhase(phaseId);
+  }
+
+  function deleteTask(taskId) {
+    if (!confirm('このタスクを削除しますか？データは論理削除として保持されます。')) return;
+    renderLoading('タスクを削除しています');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      state.view = 'tasks';
+      render();
+    }).withFailureHandler(renderError).deleteTask(taskId);
+  }
+
+  function deleteIssue(issueId) {
+    if (!confirm('この課題を削除しますか？データは論理削除として保持されます。')) return;
+    renderLoading('課題を削除しています');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      state.view = 'issues';
+      render();
+    }).withFailureHandler(renderError).deleteIssue(issueId);
+  }
+
+  function deactivateMember(email) {
+    if (!confirm(email + ' を無効化しますか？')) return;
+    renderLoading('メンバーを更新しています');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      render();
+    }).withFailureHandler(renderError).deactivateMember(state.activeProject.project.project_id, email);
+  }
+
+  function loadDeletedRecords() {
+    state.view = 'restore';
+    renderLoading('削除済みデータを読み込んでいます');
+    google.script.run.withSuccessHandler((records) => {
+      state.deletedRecords = records;
+      render();
+    }).withFailureHandler(renderError).getDeletedRecords(state.activeProject.project.project_id);
+  }
+
+  function restoreRecord(type, id) {
+    renderLoading('データを復元しています');
+    google.script.run.withSuccessHandler((data) => {
+      state.activeProject = data.activeProject;
+      state.deletedRecords = data.deletedRecords;
+      state.view = 'restore';
+      render();
+    }).withFailureHandler(renderError).restoreRecord(state.activeProject.project.project_id, type, id);
+  }
+
+  function openPreviewModal() {
+    showModal('通知プレビュー', `
+      <form class="form-grid" onsubmit="submitNotificationPreview(event)">
+        <label class="wide">種類<select name="preview_type">${options(['task', 'issue', 'overdue'], 'task')}</select></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">送信</button></div>
+      </form>
+    `);
+  }
+
+  function submitNotificationPreview(event) {
+    event.preventDefault();
+    const data = formToObject(event.target);
+    sendNotificationPreview(data.preview_type);
+  }
+
+  function sendNotificationPreview(previewType) {
+    const form = document.getElementById('notification-form');
+    renderLoading('プレビュー通知を送信しています');
+    google.script.run.withSuccessHandler(() => {
+      state.view = 'settings';
+      render();
+    }).withFailureHandler(renderError).sendNotificationPreview(state.activeProject.project.project_id, formToObject(form), previewType);
+  }
+
+  function dragSchedule(event, type, id, start, end) {
+    event.dataTransfer.setData('text/plain', JSON.stringify({ type, id, start, end }));
+  }
+
+  function dropSchedule(event, type, id, newStart) {
+    event.preventDefault();
+    const raw = event.dataTransfer.getData('text/plain');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.type !== type || data.id !== id) return;
+    const duration = daysBetween(data.start, data.end);
+    const newEnd = addDays(newStart, duration);
+    renderLoading('日程を更新しています');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      render();
+    }).withFailureHandler(renderError).updateSchedule(type, id, newStart, newEnd);
+  }
+
+  function daysBetween(start, end) {
+    const a = new Date(start + 'T00:00:00');
+    const b = new Date(end + 'T00:00:00');
+    return Math.round((b - a) / 86400000);
+  }
+
+  function addDays(start, days) {
+    const date = new Date(start + 'T00:00:00');
+    date.setDate(date.getDate() + days);
+    return date.toISOString().slice(0, 10);
+  }
+
+  function installOverdueTrigger() {
+    renderLoading('期限超過通知トリガーを設定しています');
+    google.script.run.withSuccessHandler((settings) => {
+      state.notificationSettings = settings;
+      state.view = 'settings';
+      render();
+    }).withFailureHandler(renderError).installOverdueNotificationTrigger(state.activeProject.project.project_id);
+  }
+
+  function loadAuditLogs() {
+    state.view = 'audit';
+    renderLoading('監査ログを読み込んでいます');
+    google.script.run.withSuccessHandler((logs) => {
+      state.auditLogs = logs;
+      render();
+    }).withFailureHandler(renderError).getAuditLogs(state.activeProject.project.project_id);
+  }
+
+  function exportCsv() {
+    google.script.run.withSuccessHandler((csv) => downloadCsv(csv, state.activeProject.project.project_name + '_progress.csv')).withFailureHandler(renderError).exportProjectCsv(state.activeProject.project.project_id);
+  }
+
+  function exportAuditCsv() {
+    google.script.run.withSuccessHandler((csv) => downloadCsv(csv, state.activeProject.project.project_name + '_audit.csv')).withFailureHandler(renderError).exportAuditLogsCsv(state.activeProject.project.project_id);
+  }
+
+  function downloadCsv(csv, filename) {
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function showModal(title, body) {
+    document.getElementById('modal-root').innerHTML = `<div class="modal-backdrop"><section class="modal"><div class="modal-header"><h2>${escapeHtml(title)}</h2><button class="icon-button" onclick="closeModal()">閉じる</button></div><div class="modal-body">${body}<div id="modal-message"></div></div></section></div>`;
+  }
+
+  function closeModal() {
+    const root = document.getElementById('modal-root');
+    if (root) root.innerHTML = '';
+  }
+
+  function renderModalBusy() {
+    const message = document.getElementById('modal-message');
+    if (message) message.innerHTML = '<p class="modal-note">保存しています</p>';
+  }
+
+  function renderModalError(error) {
+    const message = document.getElementById('modal-message');
+    if (message) message.innerHTML = `<p class="modal-error">${escapeHtml(error.message || error)}</p>`;
+    else renderError(error);
+  }
+
+  function formToObject(form) {
+    return Array.from(new FormData(form).entries()).reduce((object, pair) => {
+      object[pair[0]] = pair[1];
+      return object;
+    }, {});
+  }
+
+  function options(values, selected) {
+    return values.map((value) => `<option value="${escapeAttr(value)}" ${value === selected ? 'selected' : ''}>${escapeHtml(value)}</option>`).join('');
+  }
+
+  function getDateRange(start, end, scale) {
+    const slots = [];
+    const current = new Date(start + 'T00:00:00');
+    const last = new Date(end + 'T00:00:00');
+
+    while (current <= last) {
+      const slotStart = new Date(current);
+      const slotEnd = new Date(current);
+      if (scale === 'week') slotEnd.setDate(slotEnd.getDate() + 6);
+      else if (scale === 'month') {
+        slotEnd.setMonth(slotEnd.getMonth() + 1);
+        slotEnd.setDate(slotEnd.getDate() - 1);
+      }
+      if (slotEnd > last) slotEnd.setTime(last.getTime());
+      slots.push({
+        start: toDateString(slotStart),
+        end: toDateString(slotEnd),
+        label: scale === 'day' ? toDateString(slotStart).slice(5).replace('-', '/') : toDateString(slotStart).slice(0, 7)
+      });
+      current.setTime(slotEnd.getTime());
+      current.setDate(current.getDate() + 1);
+    }
+    return slots;
+  }
+
+  function toDateString(date) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  function renderLoading(message) {
+    document.getElementById('app').innerHTML = `<div class="loading"><div class="loading-mark"></div><p>${escapeHtml(message)}</p></div>`;
+  }
+
+  function renderError(error) {
+    document.getElementById('app').innerHTML = `<div class="error-state"><strong>読み込みに失敗しました</strong><p>${escapeHtml(error.message || error)}</p><button class="primary-button" onclick="boot()">再読み込み</button></div>`;
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/`/g, '&#96;');
+  }
+
+  // @email@domain.com をハイライトスパンに変換（escapeHtml後に適用）
+  function highlightMentions(text) {
+    return escapeHtml(text).replace(
+      /@([\w.+\-]+@[\w.\-]+\.[a-zA-Z]{2,})/g,
+      '<span class="mention">@$1</span>'
+    );
+  }
+
+  // ガント依存関係 SVG 矢印を計算・描画
+  function renderGanttDependencyLines(detail, range, rows, cellWidth) {
+    if (!range.length || !rows.length) return '';
+
+    // taskId → rows配列インデックスのマップを構築
+    const rowMap = {};
+    rows.forEach((row, i) => {
+      if (row.item.task_id) rowMap[row.item.task_id] = i;
+    });
+
+    // rangeの中で日付が属するスロットのインデックスを検索
+    function findSlot(date) {
+      for (let i = 0; i < range.length; i++) {
+        if (range[i].start <= date && date <= range[i].end) return i;
+      }
+      return -1;
+    }
+
+    const LABEL_W = 210;
+    const ROW_H = 38;
+
+    const paths = [];
+    detail.tasks.forEach((task) => {
+      if (!task.depends_on) return;
+      const srcId = task.depends_on;
+      const srcRowIdx = rowMap[srcId];
+      const dstRowIdx = rowMap[task.task_id];
+      if (srcRowIdx === undefined || dstRowIdx === undefined) return;
+
+      const srcTask = detail.tasks.find((t) => t.task_id === srcId);
+      if (!srcTask || !srcTask.planned_end || !task.planned_start) return;
+
+      const srcSlot = findSlot(srcTask.planned_end);
+      const dstSlot = findSlot(task.planned_start);
+      if (srcSlot < 0 || dstSlot < 0) return;
+
+      // 矢印の始点 = ソースタスクの予定バー右端、終点 = ターゲットタスクの予定バー左端
+      const x1 = LABEL_W + (srcSlot + 1) * cellWidth;
+      const y1 = (srcRowIdx + 1) * ROW_H + ROW_H / 2; // +1 はヘッダー行分
+      const x2 = LABEL_W + dstSlot * cellWidth;
+      const y2 = (dstRowIdx + 1) * ROW_H + ROW_H / 2;
+      const cx = (x1 + x2) / 2;
+      paths.push(`<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}" />`);
+    });
+
+    if (!paths.length) return '';
+
+    const svgW = LABEL_W + range.length * cellWidth;
+    const svgH = (rows.length + 1) * ROW_H;
+
+    return `
+      <svg class="gantt-dep-svg" width="${svgW}" height="${svgH}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="dep-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <polygon points="0 0, 7 3.5, 0 7" fill="#176b87" opacity="0.7"/>
+          </marker>
+        </defs>
+        <g fill="none" stroke="#176b87" stroke-width="1.5" stroke-opacity="0.65"
+           stroke-dasharray="5,3" marker-end="url(#dep-arrow)">
+          ${paths.join('')}
+        </g>
+      </svg>
+    `;
+  }
+
+  function deletedProjectTable() {
+    const rows = state.deletedProjects || [];
+    return `
+      <div class="subsection">
+        <h3>プロジェクト</h3>
+        <table class="task-table">
+          <thead><tr><th>名称</th><th>ID</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map((row) => `<tr><td>${escapeHtml(row.project_name)}</td><td>${escapeHtml(row.project_id)}</td><td><button class="icon-button" onclick="restoreProject('${escapeAttr(row.project_id)}')">復元</button><button class="icon-button danger-text" onclick="archiveDeletedProject('${escapeAttr(row.project_id)}')">完全アーカイブ</button></td></tr>`).join('') || '<tr><td colspan="3">削除済みプロジェクトはありません。</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function openIssueCommentModal(issueId) {
+    const detail = state.activeProject;
+    const issue = detail.issues.find((item) => item.issue_id === issueId);
+    const comments = (detail.issueComments || []).filter((comment) => comment.issue_id === issueId);
+    showModal('課題コメント', `
+      <div class="comment-list">
+        <h3>${escapeHtml(issue ? issue.title : '')}</h3>
+        ${comments.map((comment) => `<div class="comment-item"><strong>${escapeHtml(comment.user_email)}</strong><span>${escapeHtml(comment.created_at)}</span><p>${highlightMentions(comment.comment)}</p><div class="row-actions"><button class="icon-button" onclick="openIssueCommentEditModal('${escapeAttr(comment.comment_id)}')">編集</button><button class="icon-button danger-text" onclick="deleteIssueComment('${escapeAttr(comment.comment_id)}')">削除</button></div></div>`).join('') || '<p class="muted-text">コメントはまだありません。</p>'}
+      </div>
+      <form class="form-grid" onsubmit="submitIssueComment(event)">
+        <input type="hidden" name="issue_id" value="${escapeAttr(issueId)}">
+        <label class="wide">コメント<textarea name="comment" required maxlength="1000"></textarea></label>
+        <p class="wide muted-text" style="margin:0;">💡 <code>@user@domain.com</code> 形式でメンション通知を送れます</p>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">追加</button></div>
+      </form>
+    `);
+  }
+
+  function openIssueCommentEditModal(commentId) {
+    const comment = (state.activeProject.issueComments || []).find((item) => item.comment_id === commentId);
+    if (!comment) return;
+    showModal('コメント編集', `
+      <form class="form-grid" onsubmit="submitIssueCommentEdit(event)">
+        <input type="hidden" name="comment_id" value="${escapeAttr(comment.comment_id)}">
+        <input type="hidden" name="issue_id" value="${escapeAttr(comment.issue_id)}">
+        <label class="wide">コメント<textarea name="comment" required maxlength="1000">${escapeHtml(comment.comment)}</textarea></label>
+        <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
+      </form>
+    `);
+  }
+
+  function submitIssueCommentEdit(event) {
+    event.preventDefault();
+    renderModalBusy();
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      closeModal();
+      state.view = 'issues';
+      render();
+    }).withFailureHandler(renderModalError).updateIssueComment(formToObject(event.target));
+  }
+
+  function deleteIssueComment(commentId) {
+    if (!confirm('このコメントを削除しますか？')) return;
+    renderLoading('コメントを削除しています');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      state.view = 'issues';
+      render();
+    }).withFailureHandler(renderError).deleteIssueComment(commentId);
+  }
+
+  function archiveDeletedProject(projectId) {
+    if (!confirm('この削除済みプロジェクトを完全アーカイブしますか？復元一覧からは消えます。')) return;
+    renderLoading('プロジェクトを完全アーカイブしています');
+    google.script.run.withSuccessHandler((data) => {
+      state.deletedProjects = data.deletedProjects || [];
+      closeModal();
+      state.view = 'restore';
+      render();
+    }).withFailureHandler(renderError).archiveDeletedProject(projectId);
+  }
+
+  function loadPortfolioReport(showLoading) {
+    if (showLoading) renderLoading('横断レポートを集計しています');
+    google.script.run.withSuccessHandler((rows) => {
+      state.portfolioReport = rows;
+      state.view = 'report';
+      render();
+    }).withFailureHandler(renderError).getPortfolioReport();
+  }
+
+  function dragSchedule(event, type, id, start, end, mode) {
+    event.stopPropagation();
+    event.dataTransfer.setData('text/plain', JSON.stringify({ type, id, start, end, mode: mode || 'move' }));
+  }
+
+  function dropSchedule(event, type, id, newStart) {
+    event.preventDefault();
+    const raw = event.dataTransfer.getData('text/plain');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.type !== type || data.id !== id) return;
+    const duration = daysBetween(data.start, data.end);
+    let targetStart = newStart;
+    let targetEnd = addDays(newStart, duration);
+    if (data.mode === 'start') {
+      targetEnd = data.end;
+    } else if (data.mode === 'end') {
+      targetStart = data.start;
+      targetEnd = newStart;
+    }
+    renderLoading('日程を更新しています');
+    google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      render();
+    }).withFailureHandler(renderError).updateSchedule(type, id, targetStart, targetEnd);
+  }
+
+  boot();
+</script>
