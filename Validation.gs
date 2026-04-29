@@ -79,7 +79,8 @@ function validateTaskPayload(payload) {
     priority: sanitizeText(task.priority || 'Medium', 20),
     blocked_reason: sanitizeText(task.blocked_reason || '', 300),
     depends_on: sanitizeText(task.depends_on || '', 36),
-    assignee_email: normalizeEmail(task.assignee_email)
+    assignee_email: normalizeEmail(task.assignee_email),
+    summary: sanitizeText(task.task_description || '', 1000)
   };
 }
 
@@ -121,7 +122,8 @@ function validateIssuePayload(payload) {
     severity: sanitizeText(issue.severity || 'Medium', 20),
     status: sanitizeText(issue.status || '未対応', 20),
     owner_email: normalizeEmail(issue.owner_email),
-    due_date: String(issue.due_date)
+    due_date: String(issue.due_date),
+    summary: sanitizeText(issue.issue_description || '', 1000)
   };
 }
 

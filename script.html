@@ -10,17 +10,24 @@
     portfolioReport: [],
     serverDate: '',
     view: 'gantt',
-    ganttScale: 'day'
+    ganttScale: 'day',
+    sidebarCollapsed: false
   };
 
   function boot() {
-    google.script.run
-      .withSuccessHandler((data) => {
-        Object.assign(state, data);
-        render();
-      })
-      .withFailureHandler(renderError)
-      .getAppBootstrap();
+    fetch('https://holidays-jp.github.io/api/v1/date.json')
+      .then(res => res.json())
+      .then(holidays => { state.holidays = holidays; })
+      .catch(() => { state.holidays = {}; })
+      .finally(() => {
+        google.script.run
+          .withSuccessHandler((data) => {
+            Object.assign(state, data);
+            render();
+          })
+          .withFailureHandler(renderError)
+          .getAppBootstrap();
+      });
   }
 
   function setupSample() {
@@ -46,8 +53,24 @@
     render();
   }
 
+  function togglePhase(phaseId) {
+    state.collapsedPhases = state.collapsedPhases || {};
+    state.collapsedPhases[phaseId] = !state.collapsedPhases[phaseId];
+    render();
+  }
+
+  function toggleDashboard() {
+    state.showDashboard = state.showDashboard === false ? true : false;
+    render();
+  }
+
   function setGanttScale(scale) {
     state.ganttScale = scale;
+    render();
+  }
+
+  function toggleSidebar() {
+    state.sidebarCollapsed = !state.sidebarCollapsed;
     render();
   }
 
@@ -70,7 +93,7 @@
     const project = detail.project;
 
     document.getElementById('app').innerHTML = `
-      <div class="layout">
+      <div class="layout ${state.sidebarCollapsed ? 'sidebar-collapsed' : ''}">
         <aside class="sidebar">
           <div class="brand">
             <div class="brand-icon">P</div>
@@ -88,27 +111,70 @@
           </div>
         </aside>
         <main class="main">
-          <header class="topbar">
-            <div>
-              <div class="eyebrow">${escapeHtml(project.client_name)}</div>
-              <h1 class="title">${escapeHtml(project.project_name)}</h1>
-              <div class="meta">
-                <span class="pill">${escapeHtml(project.status)}</span>
-                <span class="pill">${escapeHtml(project.start_date)} - ${escapeHtml(project.end_date)}</span>
-                <span class="pill">Owner ${escapeHtml(project.owner_email)}</span>
+          <div class="main-container">
+            <header class="topbar">
+              <div style="display: flex; align-items: flex-start; gap: 16px;">
+                <button class="toggle-sidebar-btn" onclick="toggleSidebar()" title="サイドバー切替">
+                  ${state.sidebarCollapsed ? '&#x2192;' : '&#x2190;'}
+                </button>
+                <div>
+                  <div class="eyebrow">${escapeHtml(project.client_name)}</div>
+                  <div style="display: flex; align-items: center; gap: 12px;">
+                    <h1 class="title">${escapeHtml(project.project_name)}</h1>
+                    <div class="dropdown" id="project-menu">
+                      <button class="icon-button" onclick="toggleDropdown('project-menu')" title="操作">⋮</button>
+                      <div class="dropdown-menu">
+                        <button class="dropdown-item" onclick="openProjectModal(true)">プロジェクト設定</button>
+                        <button class="dropdown-item danger" onclick="deleteProject()">プロジェクト削除</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="meta">
+                    <span class="pill">${escapeHtml(project.status)}</span>
+                    <span class="pill">${escapeHtml(project.start_date)} - ${escapeHtml(project.end_date)}</span>
+                    <span class="pill">Owner ${escapeHtml(project.owner_email)}</span>
+                    <button class="secondary-button" style="padding: 2px 8px; font-size: 11px; margin-left: 4px;" onclick="toggleDashboard()">${state.showDashboard === false ? 'サマリーを表示' : 'サマリーを隠す'}</button>
+                  </div>
+                </div>
+              </div>
+              <div class="user-chip"><span>Signed in</span><strong>${escapeHtml(state.user.email)}</strong></div>
+            </header>
+
+          ${state.showDashboard === false ? '' : `
+          <div class="dashboard-container">
+            <div class="dashboard-row">
+              <div class="metric">
+                <span>全体進捗</span>
+                <div class="metric-value">${escapeHtml(summary.progress)}%</div>
+              </div>
+              <div class="metric">
+                <span>タスク状況</span>
+                <div class="metric-value">${detail.tasks.length}</div>
+                <div class="metric-sub">
+                  <span style="color:var(--brand)">完了 ${summary.doneTaskCount}</span>
+                  <span style="color:var(--danger)">遅延 ${summary.delayedTaskCount}</span>
+                </div>
+              </div>
+              <div class="metric">
+                <span>課題状況</span>
+                <div class="metric-value">${detail.issues.length}</div>
+                <div class="metric-sub">
+                  <span style="color:var(--brand)">完了 ${detail.issues.filter(i => i.status === '完了' || i.status === '解決済み').length}</span>
+                  <span style="color:var(--text)">未完了 ${detail.issues.filter(i => i.status !== '完了' && i.status !== '解決済み').length}</span>
+                </div>
               </div>
             </div>
-            <div class="user-chip"><span>Signed in</span><strong>${escapeHtml(state.user.email)}</strong></div>
-          </header>
-
-          <section class="summary-grid">
-            ${metric('全体進捗', summary.progress + '%')}
-            ${metric('フェーズ', summary.phaseCount)}
-            ${metric('タスク', summary.taskCount)}
-            ${metric('完了', summary.doneTaskCount)}
-            ${metric('遅延', summary.delayedTaskCount)}
-            ${metric('課題', summary.openIssueCount)}
-          </section>
+            
+            <div class="dashboard-row">
+              ${detail.phases.map(p => `
+                <div class="metric">
+                  <span>${escapeHtml(p.phase_name)}</span>
+                  <div class="metric-value">${escapeHtml(p.progress_percent || 0)}%</div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+          `}
 
           <div class="toolbar">
             <div class="tabs">
@@ -123,9 +189,6 @@
               ${tabButton('audit', '監査')}
             </div>
             <div class="actions">
-              <button class="ghost-button" onclick="openProjectModal(true)">PJ編集</button>
-              <button class="ghost-button danger-text" onclick="deleteProject()">PJ削除</button>
-              <button class="ghost-button" onclick="exportCsv()">CSV</button>
               <button class="primary-button" onclick="openPhaseModal()">フェーズ追加</button>
               <button class="primary-button" onclick="openTaskModal()">タスク追加</button>
               <button class="primary-button" onclick="openIssueModal()">課題登録</button>
@@ -133,7 +196,8 @@
           </div>
 
           ${renderActivePanel(detail)}
-        </main>
+        </div>
+      </main>
       </div>
       <div id="modal-root"></div>
     `;
@@ -155,9 +219,7 @@
     return `<button class="tab ${state.view === view ? 'active' : ''}" onclick="setView('${view}')">${label}</button>`;
   }
 
-  function metric(label, value) {
-    return `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
-  }
+
 
   function renderGanttPanel(detail) {
     return `
@@ -178,11 +240,16 @@
   function renderGantt(detail) {
     const range = getDateRange(detail.project.start_date, detail.project.end_date, state.ganttScale);
     const rows = [];
+    state.collapsedPhases = state.collapsedPhases || {};
     detail.phases.forEach((phase) => {
-      rows.push({ label: phase.phase_name, item: phase, isPhase: true });
-      detail.tasks
-        .filter((task) => task.phase_id === phase.phase_id)
-        .forEach((task) => rows.push({ label: '  ' + task.task_name, item: task, isPhase: false }));
+      const isCollapsed = state.collapsedPhases[phase.phase_id];
+      rows.push({ label: phase.phase_name, item: phase, isPhase: true, isCollapsed });
+      
+      if (!isCollapsed) {
+        detail.tasks
+          .filter((task) => task.phase_id === phase.phase_id)
+          .forEach((task) => rows.push({ label: '  ' + task.task_name, item: task, isPhase: false }));
+      }
     });
     const width = state.ganttScale === 'day' ? 28 : state.ganttScale === 'week' ? 54 : 76;
 
@@ -190,8 +257,18 @@
       <div class="gantt">
         <div style="position:relative;">
           <div class="gantt-grid" style="--days:${range.length}; --cell:${width}px">
-            <div class="gantt-label date-head">項目</div>
-            ${range.map((slot) => `<div class="gantt-cell date-head ${slot.start <= state.serverDate && state.serverDate <= slot.end ? 'today' : ''}">${escapeHtml(slot.label)}</div>`).join('')}
+            <div class="gantt-label date-head" style="position: sticky; left: 0; z-index: 11;">項目</div>
+            ${range.map((slot) => {
+              let bgClass = '';
+              let dayStr = '';
+              if (state.ganttScale === 'day') {
+                if (slot.isHoliday || slot.dayOfWeek === 0) bgClass = 'holiday-bg';
+                else if (slot.dayOfWeek === 6) bgClass = 'saturday-bg';
+                const DAYS_JA = ['日', '月', '火', '水', '木', '金', '土'];
+                dayStr = `<div>${DAYS_JA[slot.dayOfWeek]}</div>`;
+              }
+              return `<div class="gantt-cell date-head ${bgClass} ${slot.start <= state.serverDate && state.serverDate <= slot.end ? 'today' : ''}"><div>${escapeHtml(slot.label)}</div>${dayStr}</div>`;
+            }).join('')}
             ${rows.map((row) => renderGanttRow(row, range)).join('')}
           </div>
           ${renderGanttDependencyLines(detail, range, rows, width)}
@@ -202,16 +279,33 @@
 
   function renderGanttRow(row, range) {
     const item = row.item;
-    const type = item.phase_id ? 'task' : 'phase';
+    const type = row.isPhase ? 'phase' : 'task';
     const id = item.task_id || item.phase_id;
     const isDelayed = item.planned_end && item.planned_end < state.serverDate && Number(item.progress_percent || 0) < 100;
+    
+    let labelHtml = escapeHtml(row.label);
+    let tooltipAttr = '';
+
+    if (row.isPhase) {
+      const icon = row.isCollapsed ? '▶ ' : '▼ ';
+      labelHtml = `<span style="cursor:pointer; display:inline-block; width:100%;" onclick="togglePhase('${escapeAttr(id)}')">${icon}${escapeHtml(row.label)}</span>`;
+    } else {
+      tooltipAttr = true;
+    }
+    const baseClass = 'gantt-label ' + (row.isPhase ? 'gantt-phase-label' : 'gantt-task-label');
+
     return `
-      <div class="gantt-label ${row.isPhase ? 'gantt-phase-label' : 'gantt-task-label'}">${escapeHtml(row.label)}</div>
+      <div class="${baseClass}${tooltipAttr ? ' has-tooltip' : ''}" style="position: sticky; left: 0; z-index: 10;" ${tooltipAttr ? `data-tooltip="担当: ${escapeAttr(item.assignee_email)}\n予定: ${item.planned_start} ～ ${item.planned_end}"` : ''}>${labelHtml}</div>
       ${range.map((slot) => {
         const planned = item.planned_start <= slot.end && item.planned_end >= slot.start;
         const actualEnd = item.actual_end || state.serverDate;
         const actual = item.actual_start && item.actual_start <= slot.end && actualEnd >= slot.start;
-        return `<div class="gantt-cell" ondragover="event.preventDefault()" ondrop="dropSchedule(event, '${type}', '${escapeAttr(id)}', '${slot.start}')">${planned ? `<span class="bar planned ${isDelayed ? 'delayed' : ''}" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'move')"><i class="resize-handle left" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'start')"></i><i class="resize-handle right" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'end')"></i></span>` : ''}${actual ? '<span class="bar actual"></span>' : ''}</div>`;
+        let bgClass = '';
+        if (state.ganttScale === 'day') {
+          if (slot.isHoliday || slot.dayOfWeek === 0) bgClass = 'holiday-bg';
+          else if (slot.dayOfWeek === 6) bgClass = 'saturday-bg';
+        }
+        return `<div class="gantt-cell ${bgClass}" ondragover="event.preventDefault()" ondrop="dropSchedule(event, '${type}', '${escapeAttr(id)}', '${slot.start}')">${planned ? `<span class="bar planned ${isDelayed ? 'delayed' : ''}" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'move')"><i class="resize-handle left" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'start')"></i><i class="resize-handle right" draggable="true" ondragstart="dragSchedule(event, '${type}', '${escapeAttr(id)}', '${escapeAttr(item.planned_start)}', '${escapeAttr(item.planned_end)}', 'end')"></i></span>` : ''}${actual ? '<span class="bar actual"></span>' : ''}</div>`;
       }).join('')}
     `;
   }
@@ -219,7 +313,7 @@
   function renderPhasePanel(detail) {
     return `
       <section class="section">
-        <div class="section-header"><h2>フェーズ管理</h2><button class="primary-button" onclick="openPhaseModal()">フェーズ追加</button></div>
+        <div class="section-header"><h2>フェーズ管理</h2></div>
         <div class="phase-board">${detail.phases.map((phase) => renderPhaseCard(phase, detail.tasks)).join('')}</div>
       </section>
     `;
@@ -236,19 +330,41 @@
         <p class="muted-text">${escapeHtml(phase.planned_start)} - ${escapeHtml(phase.planned_end)}</p>
         <div class="row-actions">
           <span class="status ${delayed ? 'delay' : Number(phase.progress_percent) >= 100 ? 'done' : ''}">${delayed ? delayed + '件遅延' : phaseTasks.length + ' tasks'}</span>
-          <span><button class="icon-button" onclick="openPhaseModal('${escapeAttr(phase.phase_id)}')">編集</button><button class="icon-button danger-text" onclick="deletePhase('${escapeAttr(phase.phase_id)}')">削除</button></span>
+          <span>
+            <button class="secondary-button" style="padding: 4px 8px; font-size: 12px;" onclick="openPhaseModal('${escapeAttr(phase.phase_id)}')">編集</button>
+            <button class="secondary-button danger-text" style="padding: 4px 8px; font-size: 12px;" onclick="deletePhase('${escapeAttr(phase.phase_id)}')">削除</button>
+          </span>
         </div>
       </article>
     `;
   }
 
   function renderTaskPanel(detail) {
+    const phases = detail.phases || [];
+    const assignees = [...new Set(detail.tasks.map(t => t.assignee_email))];
+    const statuses = ['未着手', '進行中', '完了'];
+
     return `
       <section class="section">
         <div class="section-header"><h2>タスク一覧</h2><span class="pill">${detail.tasks.length} tasks</span></div>
-        <div class="section-header compact-header">
+        <div class="section-header compact-header" style="flex-wrap: wrap; gap: 8px; justify-content: space-between;">
+          <div class="filters" style="display: flex; gap: 8px; flex: 1; align-items: center;">
+            <input type="text" id="task-search-input" placeholder="タスク名で検索..." oninput="applyTaskFilter()" style="padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; width: 200px; background-color: var(--surface);">
+            <select id="task-phase-filter" onchange="applyTaskFilter()" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; background-color: var(--surface);">
+              <option value="">すべてのフェーズ</option>
+              ${phases.map(p => `<option value="${escapeAttr(p.phase_name)}">${escapeHtml(p.phase_name)}</option>`).join('')}
+            </select>
+            <select id="task-status-filter" onchange="applyTaskFilter()" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; background-color: var(--surface);">
+              <option value="">すべての状態</option>
+              ${statuses.map(s => `<option value="${escapeAttr(s)}">${escapeHtml(s)}</option>`).join('')}
+            </select>
+            <select id="task-assignee-filter" onchange="applyTaskFilter()" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; background-color: var(--surface);">
+              <option value="">すべての担当者</option>
+              ${assignees.map(a => `<option value="${escapeAttr(a)}">${escapeHtml(a)}</option>`).join('')}
+            </select>
+          </div>
           <div class="actions">
-            <button class="ghost-button" onclick="openBulkMoveModal()">選択タスクを移動</button>
+            <button class="secondary-button" onclick="openBulkMoveModal()">選択タスクを移動</button>
           </div>
         </div>
         ${renderTaskTable(detail)}
@@ -260,25 +376,38 @@
     const phaseById = Object.fromEntries(detail.phases.map((phase) => [phase.phase_id, phase.phase_name]));
     return `
       <table class="task-table">
-        <thead><tr><th></th><th>タスク</th><th>フェーズ</th><th>担当</th><th>予定</th><th>進捗</th><th>状態</th><th></th></tr></thead>
+        <thead><tr><th></th><th>タスク</th><th>フェーズ</th><th>担当</th><th>予定</th><th>優先度</th><th>進捗</th><th>状態</th><th></th></tr></thead>
         <tbody>
           ${detail.tasks.map((task) => {
             const delayed = task.planned_end < state.serverDate && Number(task.progress_percent || 0) < 100;
             const blocked = Boolean(task.blocked_reason);
             const done = Number(task.progress_percent || 0) >= 100;
+            const priority = task.priority || 'Medium';
+            const priorityClass = priority === 'High' ? 'priority-high' : priority === 'Low' ? 'priority-low' : 'priority-medium';
+            const assigneePart = (task.assignee_email || '').split('@')[0];
             return `
-              <tr>
+              <tr class="task-row" data-task-name="${escapeAttr(task.task_name)}" data-phase="${escapeAttr(phaseById[task.phase_id] || '')}" data-assignee="${escapeAttr(task.assignee_email)}" data-status="${escapeAttr(task.status)}">
                 <td><input type="checkbox" class="task-check" value="${escapeAttr(task.task_id)}"></td>
-                <td><strong>${escapeHtml(task.task_name)}</strong>${blocked ? `<br><span class="status blocked">${escapeHtml(task.blocked_reason)}</span>` : ''}</td>
+                <td><a href="javascript:void(0)" onclick="openTaskDetail('${escapeAttr(task.task_id)}')" style="color: inherit; text-decoration: none; border-bottom: 1px dashed var(--brand);"><strong>${escapeHtml(task.task_name)}</strong></a>${blocked ? `<br><span class="status blocked">${escapeHtml(task.blocked_reason)}</span>` : ''}</td>
                 <td>${escapeHtml(phaseById[task.phase_id] || '')}</td>
                 <td>${escapeHtml(task.assignee_email)}</td>
                 <td>${escapeHtml(task.planned_start)} - ${escapeHtml(task.planned_end)}</td>
-                <td>${escapeHtml(task.progress_percent || 0)}%</td>
-                <td><span class="status ${delayed ? 'delay' : done ? 'done' : ''}">${escapeHtml(delayed ? '遅延' : task.status)}</span></td>
+                <td><span class="priority-badge ${priorityClass}">${escapeHtml(priority)}</span></td>
                 <td>
-                  <button class="icon-button" onclick="openTaskModal('${escapeAttr(task.task_id)}')">編集</button>
-                  <button class="icon-button" onclick="openMoveTaskModal('${escapeAttr(task.task_id)}')">移動</button>
-                  <button class="icon-button danger-text" onclick="deleteTask('${escapeAttr(task.task_id)}')">削除</button>
+                  <div class="task-progress-wrap" style="display:flex; align-items:center; gap:8px;">
+                    <div class="task-progress-bar" style="flex:1; --p:${Number(task.progress_percent || 0)}%; --bar-color:${Number(task.progress_percent || 0) >= 100 ? 'var(--ok)' : Number(task.progress_percent || 0) >= 50 ? 'var(--brand)' : 'var(--neutral)'}">
+                    </div>
+                    <span style="font-size:12px; font-weight:600; width:36px; text-align:right; color:var(--ink);">${escapeHtml(String(task.progress_percent || 0))}%</span>
+                  </div>
+                </td>
+                <td><span class="status ${delayed ? 'delay' : done ? 'done' : ''}">${escapeHtml(delayed ? '遅延' : task.status)}</span></td>
+                <td class="row-actions-cell">
+                  <div class="row-actions">
+                    <button class="secondary-button" style="padding: 4px 8px; font-size: 11px;" onclick="openTaskDetail('${escapeAttr(task.task_id)}')">詳細</button>
+                    <button class="secondary-button" style="padding: 4px 8px; font-size: 11px;" onclick="openTaskModal('${escapeAttr(task.task_id)}')">編集</button>
+                    <button class="secondary-button" style="padding: 4px 8px; font-size: 11px;" onclick="openMoveTaskModal('${escapeAttr(task.task_id)}')">移動</button>
+                    <button class="secondary-button danger-text" style="padding: 4px 8px; font-size: 11px;" onclick="deleteTask('${escapeAttr(task.task_id)}')">削除</button>
+                  </div>
                 </td>
               </tr>
             `;
@@ -288,33 +417,195 @@
     `;
   }
 
+  function openTaskDetail(taskId) {
+    const detail = state.activeProject;
+    const task = detail.tasks.find((item) => item.task_id === taskId);
+    if (!task) return;
+    const phase = detail.phases.find(p => p.phase_id === task.phase_id);
+
+    showModal('タスク詳細', `
+      <div class="drawer-detail">
+        <header class="drawer-header">
+          <div class="drawer-eyebrow">${escapeHtml(phase ? phase.phase_name : '-')}</div>
+          <h2 class="drawer-title">${escapeHtml(task.task_name)}</h2>
+        </header>
+
+        <div class="drawer-section">
+          <div class="detail-grid">
+            <div class="detail-item">
+              <label>状態</label>
+              <span class="status ${task.status === '完了' ? 'done' : task.planned_end < state.serverDate && Number(task.progress_percent || 0) < 100 ? 'delay' : ''}">${escapeHtml(task.status)}</span>
+            </div>
+            <div class="detail-item">
+              <label>進捗</label>
+              <div class="task-progress-wrap">
+                <div class="task-progress-bar" style="--p:${Number(task.progress_percent || 0)}%; --bar-color:var(--brand)"></div>
+                <span style="font-size:12px; font-weight:700;">${escapeHtml(String(task.progress_percent || 0))}%</span>
+              </div>
+            </div>
+            <div class="detail-item">
+              <label>担当者</label>
+              <div class="assignee-box">
+                <div class="avatar">${(task.assignee_email || 'U').charAt(0).toUpperCase()}</div>
+                <span>${escapeHtml(task.assignee_email)}</span>
+              </div>
+            </div>
+            <div class="detail-item">
+              <label>優先度</label>
+              <span class="priority-badge ${task.priority === 'High' ? 'priority-high' : task.priority === 'Low' ? 'priority-low' : 'priority-medium'}">${escapeHtml(task.priority || 'Medium')}</span>
+            </div>
+            <div class="detail-item wide">
+              <label>予定期間</label>
+              <div style="font-weight:600;">${escapeHtml(task.planned_start)} ～ ${escapeHtml(task.planned_end)}</div>
+            </div>
+            <div class="detail-item wide">
+              <label>実績期間</label>
+              <div>${escapeHtml(task.actual_start || '-')} ～ ${escapeHtml(task.actual_end || '-')}</div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-section">
+          <label class="section-label">タスク概要</label>
+          <div class="summary-content">${escapeHtml(task.summary || '概要はありません。')}</div>
+        </div>
+
+        ${task.blocked_reason ? `
+        <div class="drawer-section">
+          <label class="section-label danger-text">ブロッカー</label>
+          <div class="blocked-content">${escapeHtml(task.blocked_reason)}</div>
+        </div>
+        ` : ''}
+
+        <div class="drawer-actions">
+          <button class="secondary-button" style="flex:1" onclick="closeModal()">閉じる</button>
+          <button class="primary-button" style="flex:1" onclick="openTaskModal('${escapeAttr(task.task_id)}')">編集</button>
+        </div>
+      </div>
+    `);
+  }
+
+  function applyTaskFilter() {
+    const textInput = document.getElementById('task-search-input');
+    const phaseSelect = document.getElementById('task-phase-filter');
+    const statusSelect = document.getElementById('task-status-filter');
+    const assigneeSelect = document.getElementById('task-assignee-filter');
+
+    if (!textInput || !phaseSelect || !statusSelect || !assigneeSelect) return;
+
+    const text = textInput.value.toLowerCase();
+    const phase = phaseSelect.value;
+    const status = statusSelect.value;
+    const assignee = assigneeSelect.value;
+
+    const rows = document.querySelectorAll('.task-table tbody tr.task-row');
+    rows.forEach(row => {
+      const taskName = (row.dataset.taskName || '').toLowerCase();
+      const taskPhase = row.dataset.phase || '';
+      const taskStatus = row.dataset.status || '';
+      const taskAssignee = row.dataset.assignee || '';
+
+      const matchText = text === '' || taskName.includes(text);
+      const matchPhase = phase === '' || taskPhase === phase;
+      const matchStatus = status === '' || taskStatus === status;
+      const matchAssignee = assignee === '' || taskAssignee === assignee;
+
+      if (matchText && matchPhase && matchStatus && matchAssignee) {
+        row.style.display = '';
+      } else {
+        row.style.display = 'none';
+      }
+    });
+  }
+
   function renderIssuePanel(detail) {
     return `
       <section class="section">
-        <div class="section-header"><h2>課題一覧</h2><button class="primary-button" onclick="openIssueModal()">課題登録</button></div>
+        <div class="section-header"><h2>課題一覧</h2><span class="pill">${detail.issues.length} issues</span></div>
         <table class="task-table">
           <thead><tr><th>課題</th><th>重要度</th><th>担当</th><th>期限</th><th>状態</th><th></th></tr></thead>
           <tbody>
-            ${detail.issues.map((issue) => `
-              <tr>
-                <td><strong>${escapeHtml(issue.title)}</strong></td>
+            ${detail.issues.map((issue) => {
+              const isOverdue = issue.status !== '完了' && issue.status !== '解決済み' && issue.due_date < state.serverDate;
+              const isDone = issue.status === '完了' || issue.status === '解決済み';
+              const overDays = isOverdue ? daysBetween(issue.due_date, state.serverDate) : 0;
+              return `
+              <tr class="${isOverdue ? 'overdue-row' : ''}">
+                <td><a href="javascript:void(0)" onclick="openIssueDetail('${escapeAttr(issue.issue_id)}')" style="color: inherit; text-decoration: none; border-bottom: 1px dashed var(--brand);"><strong>${escapeHtml(issue.title)}</strong></a>${isOverdue ? ' <span class="overdue-badge">⚠ 期限超過</span>' : ''}</td>
                 <td>${escapeHtml(issue.severity)}</td>
                 <td>${escapeHtml(issue.owner_email)}</td>
-                <td>${escapeHtml(issue.due_date)}</td>
-                <td><span class="status ${issue.status === '完了' ? 'done' : issue.due_date < state.serverDate ? 'delay' : ''}">${escapeHtml(issue.status)}</span></td>
-                <td><button class="icon-button" onclick="openIssueModal('${escapeAttr(issue.issue_id)}')">編集</button><button class="icon-button" onclick="openIssueCommentModal('${escapeAttr(issue.issue_id)}')">コメント</button><button class="icon-button danger-text" onclick="deleteIssue('${escapeAttr(issue.issue_id)}')">削除</button></td>
+                <td class="${isOverdue ? 'overdue-date' : ''}">${escapeHtml(issue.due_date)}${isOverdue ? `<span class="overdue-days">${overDays}日超過</span>` : ''}</td>
+                <td><span class="status ${isDone ? 'done' : isOverdue ? 'delay' : ''}">${escapeHtml(issue.status)}</span></td>
+                <td class="row-actions-cell">
+                  <div class="row-actions">
+                    <button class="secondary-button" style="padding: 4px 8px; font-size: 11px;" onclick="openIssueDetail('${escapeAttr(issue.issue_id)}')">詳細</button>
+                    <button class="secondary-button" style="padding: 4px 8px; font-size: 11px;" onclick="openIssueModal('${escapeAttr(issue.issue_id)}')">編集</button>
+                    <button class="secondary-button" style="padding: 4px 8px; font-size: 11px;" onclick="openIssueCommentModal('${escapeAttr(issue.issue_id)}')">コメント</button>
+                    <button class="secondary-button danger-text" style="padding: 4px 8px; font-size: 11px;" onclick="deleteIssue('${escapeAttr(issue.issue_id)}')">削除</button>
+                  </div>
+                </td>
               </tr>
-            `).join('')}
+              `;
+            }).join('')}
           </tbody>
         </table>
       </section>
     `;
   }
 
+  function openIssueDetail(issueId) {
+    const detail = state.activeProject;
+    const issue = detail.issues.find((item) => item.issue_id === issueId);
+    if (!issue) return;
+
+    showModal('課題詳細', `
+      <div class="drawer-detail">
+        <header class="drawer-header">
+          <div class="drawer-eyebrow">Issue Tracking</div>
+          <h2 class="drawer-title">${escapeHtml(issue.title)}</h2>
+        </header>
+
+        <div class="drawer-section">
+          <div class="detail-grid">
+            <div class="detail-item">
+              <label>重要度</label>
+              <span class="priority-badge ${issue.severity === 'High' ? 'priority-high' : issue.severity === 'Low' ? 'priority-low' : 'priority-medium'}">${escapeHtml(issue.severity)}</span>
+            </div>
+            <div class="detail-item">
+              <label>状態</label>
+              <span class="status ${issue.status === '完了' ? 'done' : ''}">${escapeHtml(issue.status)}</span>
+            </div>
+            <div class="detail-item">
+              <label>担当者</label>
+              <div class="assignee-box">
+                <div class="avatar">${(issue.owner_email || 'U').charAt(0).toUpperCase()}</div>
+                <span>${escapeHtml(issue.owner_email)}</span>
+              </div>
+            </div>
+            <div class="detail-item">
+              <label>期限</label>
+              <span class="${issue.status !== '完了' && issue.due_date < state.serverDate ? 'overdue-date' : ''}" style="font-weight:600;">${escapeHtml(issue.due_date)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="drawer-section">
+          <label class="section-label">課題概要</label>
+          <div class="summary-content">${escapeHtml(issue.summary || '概要はありません。')}</div>
+        </div>
+
+        <div class="drawer-actions">
+          <button class="secondary-button" style="flex:1" onclick="closeModal()">閉じる</button>
+          <button class="secondary-button" style="flex:1" onclick="openIssueCommentModal('${escapeAttr(issue.issue_id)}')">コメント</button>
+          <button class="primary-button" style="flex:1" onclick="openIssueModal('${escapeAttr(issue.issue_id)}')">編集</button>
+        </div>
+      </div>
+    `);
+  }
+
   function renderMemberPanel(detail) {
     return `
       <section class="section">
-        <div class="section-header"><h2>メンバー管理</h2><button class="primary-button" onclick="openMemberModal()">メンバー追加</button></div>
+        <div class="section-header"><h2>メンバー管理</h2></div>
         <table class="task-table">
           <thead><tr><th>メール</th><th>ロール</th><th>状態</th><th></th></tr></thead>
           <tbody>
@@ -323,7 +614,12 @@
                 <td><strong>${escapeHtml(member.user_email)}</strong></td>
                 <td>${escapeHtml(member.role)}</td>
                 <td><span class="status done">有効</span></td>
-                <td><button class="icon-button" onclick="openMemberModal('${escapeAttr(member.user_email)}')">編集</button><button class="icon-button danger-text" onclick="deactivateMember('${escapeAttr(member.user_email)}')">無効化</button></td>
+                <td class="row-actions-cell">
+                  <div class="row-actions">
+                    <button class="secondary-button" style="padding: 4px 8px; font-size: 11px;" onclick="openMemberModal('${escapeAttr(member.user_email)}')">編集</button>
+                    <button class="secondary-button danger-text" style="padding: 4px 8px; font-size: 11px;" onclick="deactivateMember('${escapeAttr(member.user_email)}')">無効化</button>
+                  </div>
+                </td>
               </tr>
             `).join('')}
           </tbody>
@@ -442,7 +738,7 @@
   function renderAuditPanel() {
     return `
       <section class="section">
-        <div class="section-header"><h2>監査ログ</h2><div class="actions"><button class="ghost-button" onclick="exportAuditCsv()">監査CSV</button><button class="ghost-button" onclick="loadAuditLogs()">再読み込み</button></div></div>
+        <div class="section-header"><h2>監査ログ</h2><div class="actions"><button class="ghost-button" onclick="loadAuditLogs()">再読み込み</button></div></div>
         <table class="task-table">
           <thead><tr><th>日時</th><th>ユーザー</th><th>操作</th><th>対象</th><th>ID</th></tr></thead>
           <tbody>
@@ -513,6 +809,7 @@
         <label>状態<select name="status">${options(['未着手', '進行中', '完了'], task.status || '未着手')}</select></label>
         <label>優先度<select name="priority">${options(['High', 'Medium', 'Low'], task.priority || 'Medium')}</select></label>
         <label>先行タスク<select name="depends_on"><option value="">なし</option>${otherTasks.map((t) => `<option value="${escapeAttr(t.task_id)}" ${t.task_id === (task.depends_on || '') ? 'selected' : ''}>${escapeHtml(t.task_name)}</option>`).join('')}</select></label>
+        <label class="wide">タスク概要<textarea name="task_description" maxlength="1000">${escapeHtml(task.summary || '')}</textarea></label>
         <label class="wide">ブロッカー<textarea name="blocked_reason" maxlength="300">${escapeHtml(task.blocked_reason || '')}</textarea></label>
         <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
       </form>
@@ -560,6 +857,7 @@
         <label>状態<select name="status">${options(['未対応', '対応中', '完了'], issue.status || '未対応')}</select></label>
         <label>担当<input name="owner_email" required type="email" value="${escapeAttr(issue.owner_email || state.user.email)}"></label>
         <label>期限<input name="due_date" required type="date" value="${escapeAttr(issue.due_date || detail.project.end_date)}"></label>
+        <label class="wide">課題概要<textarea name="issue_description" maxlength="1000">${escapeHtml(issue.summary || '')}</textarea></label>
         <div class="modal-actions"><button type="button" class="ghost-button" onclick="closeModal()">閉じる</button><button class="primary-button">保存</button></div>
       </form>
     `);
@@ -619,26 +917,40 @@
   function submitMoveTask(event) {
     event.preventDefault();
     const data = formToObject(event.target);
-    renderModalBusy();
+    const idx = state.activeProject.tasks.findIndex(t => t.task_id === data.task_id);
+    if (idx >= 0) state.activeProject.tasks[idx].phase_id = data.phase_id;
+    closeModal();
+    state.view = 'tasks';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
-      closeModal();
-      state.view = 'tasks';
       render();
-    }).withFailureHandler(renderModalError).moveTask(data.task_id, data.phase_id);
+    }).withFailureHandler((err) => {
+      alert('タスクの移動に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).moveTask(data.task_id, data.phase_id);
   }
 
   function submitBulkMoveTask(event) {
     event.preventDefault();
     const data = formToObject(event.target);
     const ids = data.task_ids.split(',').filter(Boolean);
-    renderModalBusy();
+    ids.forEach(id => {
+      const idx = state.activeProject.tasks.findIndex(t => t.task_id === id);
+      if (idx >= 0) state.activeProject.tasks[idx].phase_id = data.phase_id;
+    });
+    closeModal();
+    state.view = 'tasks';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
-      closeModal();
-      state.view = 'tasks';
       render();
-    }).withFailureHandler(renderModalError).moveTasks(ids, data.phase_id);
+    }).withFailureHandler((err) => {
+      alert('タスクの一括移動に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).moveTasks(ids, data.phase_id);
   }
 
   function submitIssue(event) {
@@ -674,12 +986,55 @@
 
   function submitServer(functionName) {
     const args = Array.prototype.slice.call(arguments, 1);
-    renderModalBusy();
-    const runner = google.script.run.withSuccessHandler((project) => {
-      state.activeProject = project;
+    const data = args[0];
+    let isOptimistic = false;
+
+    if (functionName === 'saveTask' && data && data.task_id) {
+      const idx = state.activeProject.tasks.findIndex(t => t.task_id === data.task_id);
+      if (idx >= 0) {
+        state.activeProject.tasks[idx] = Object.assign({}, state.activeProject.tasks[idx], data);
+        isOptimistic = true;
+      }
+    } else if (functionName === 'saveIssue' && data && data.issue_id) {
+      const idx = state.activeProject.issues.findIndex(t => t.issue_id === data.issue_id);
+      if (idx >= 0) {
+        state.activeProject.issues[idx] = Object.assign({}, state.activeProject.issues[idx], data);
+        isOptimistic = true;
+      }
+    } else if (functionName === 'savePhase' && data && data.phase_id) {
+      const idx = state.activeProject.phases.findIndex(t => t.phase_id === data.phase_id);
+      if (idx >= 0) {
+        state.activeProject.phases[idx] = Object.assign({}, state.activeProject.phases[idx], data);
+        isOptimistic = true;
+      }
+    } else if (functionName === 'saveMember' && args[1] && args[1].user_email) {
+      const payload = args[1];
+      const idx = state.activeProject.members.findIndex(t => t.user_email === payload.user_email);
+      if (idx >= 0) {
+        state.activeProject.members[idx] = Object.assign({}, state.activeProject.members[idx], payload);
+        isOptimistic = true;
+      }
+    }
+
+    if (isOptimistic) {
       closeModal();
       render();
-    }).withFailureHandler(renderModalError);
+    } else {
+      renderModalBusy();
+    }
+
+    const runner = google.script.run.withSuccessHandler((project) => {
+      state.activeProject = project;
+      if (!isOptimistic) closeModal();
+      render();
+    }).withFailureHandler((err) => {
+      if (!isOptimistic) {
+        renderModalError(err);
+      } else {
+        alert('バックグラウンドでの保存に失敗しました。画面を再読み込みします。\n' + (err.message || err));
+        openProject(state.activeProject.project.project_id);
+      }
+    });
 
     if (functionName === 'savePhase') runner.savePhase(args[0]);
     if (functionName === 'saveTask') runner.saveTask(args[0]);
@@ -711,41 +1066,65 @@
 
   function deletePhase(phaseId) {
     if (!confirm('このフェーズを削除しますか？データは論理削除として保持されます。')) return;
-    renderLoading('フェーズを削除しています');
+    const idx = state.activeProject.phases.findIndex(t => t.phase_id === phaseId);
+    if (idx >= 0) state.activeProject.phases.splice(idx, 1);
+    state.view = 'phases';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
-      state.view = 'phases';
       render();
-    }).withFailureHandler(renderError).deletePhase(phaseId);
+    }).withFailureHandler((err) => {
+      alert('フェーズの削除に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).deletePhase(phaseId);
   }
 
   function deleteTask(taskId) {
     if (!confirm('このタスクを削除しますか？データは論理削除として保持されます。')) return;
-    renderLoading('タスクを削除しています');
+    const idx = state.activeProject.tasks.findIndex(t => t.task_id === taskId);
+    if (idx >= 0) state.activeProject.tasks.splice(idx, 1);
+    state.view = 'tasks';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
-      state.view = 'tasks';
       render();
-    }).withFailureHandler(renderError).deleteTask(taskId);
+    }).withFailureHandler((err) => {
+      alert('タスクの削除に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).deleteTask(taskId);
   }
 
   function deleteIssue(issueId) {
     if (!confirm('この課題を削除しますか？データは論理削除として保持されます。')) return;
-    renderLoading('課題を削除しています');
+    const idx = state.activeProject.issues.findIndex(t => t.issue_id === issueId);
+    if (idx >= 0) state.activeProject.issues.splice(idx, 1);
+    state.view = 'issues';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
-      state.view = 'issues';
       render();
-    }).withFailureHandler(renderError).deleteIssue(issueId);
+    }).withFailureHandler((err) => {
+      alert('課題の削除に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).deleteIssue(issueId);
   }
 
   function deactivateMember(email) {
     if (!confirm(email + ' を無効化しますか？')) return;
-    renderLoading('メンバーを更新しています');
+    const idx = state.activeProject.members.findIndex(t => t.user_email === email);
+    if (idx >= 0) state.activeProject.members[idx].active = 'FALSE';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
       render();
-    }).withFailureHandler(renderError).deactivateMember(state.activeProject.project.project_id, email);
+    }).withFailureHandler((err) => {
+      alert('メンバーの更新に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).deactivateMember(state.activeProject.project.project_id, email);
   }
 
   function loadDeletedRecords() {
@@ -803,11 +1182,29 @@
     if (data.type !== type || data.id !== id) return;
     const duration = daysBetween(data.start, data.end);
     const newEnd = addDays(newStart, duration);
-    renderLoading('日程を更新しています');
+    
+    if (type === 'task') {
+      const idx = state.activeProject.tasks.findIndex(t => t.task_id === id);
+      if (idx >= 0) {
+        state.activeProject.tasks[idx].planned_start = newStart;
+        state.activeProject.tasks[idx].planned_end = newEnd;
+      }
+    } else {
+      const idx = state.activeProject.phases.findIndex(t => t.phase_id === id);
+      if (idx >= 0) {
+        state.activeProject.phases[idx].planned_start = newStart;
+        state.activeProject.phases[idx].planned_end = newEnd;
+      }
+    }
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
       render();
-    }).withFailureHandler(renderError).updateSchedule(type, id, newStart, newEnd);
+    }).withFailureHandler((err) => {
+      alert('スケジュールの更新に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).updateSchedule(type, id, newStart, newEnd);
   }
 
   function daysBetween(start, end) {
@@ -859,12 +1256,46 @@
   }
 
   function showModal(title, body) {
-    document.getElementById('modal-root').innerHTML = `<div class="modal-backdrop"><section class="modal"><div class="modal-header"><h2>${escapeHtml(title)}</h2><button class="icon-button" onclick="closeModal()">閉じる</button></div><div class="modal-body">${body}<div id="modal-message"></div></div></section></div>`;
+    document.getElementById('modal-root').innerHTML = `
+      <div class="modal-backdrop" onclick="if(event.target===this) closeModal()">
+        <section class="modal-drawer">
+          <div class="modal-header">
+            <h2>${escapeHtml(title)}</h2>
+            <button class="icon-button" onclick="closeModal()">✕</button>
+          </div>
+          <div class="modal-body">${body}<div id="modal-message"></div></div>
+        </section>
+      </div>`;
+    setTimeout(() => {
+      const drawer = document.querySelector('.modal-drawer');
+      if (drawer) drawer.classList.add('active');
+    }, 10);
+  }
+
+  function toggleDropdown(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('active');
+    
+    // 他の部分をクリックしたときに閉じる
+    const closeMenu = (e) => {
+      if (!el.contains(e.target)) {
+        el.classList.remove('active');
+        document.removeEventListener('click', closeMenu);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', closeMenu), 0);
   }
 
   function closeModal() {
     const root = document.getElementById('modal-root');
-    if (root) root.innerHTML = '';
+    if (!root) return;
+    const drawer = root.querySelector('.modal-drawer');
+    if (drawer) {
+      drawer.classList.remove('active');
+      setTimeout(() => { root.innerHTML = ''; }, 300);
+    } else {
+      root.innerHTML = '';
+    }
   }
 
   function renderModalBusy() {
@@ -903,10 +1334,14 @@
         slotEnd.setDate(slotEnd.getDate() - 1);
       }
       if (slotEnd > last) slotEnd.setTime(last.getTime());
+      const dateStr = toDateString(slotStart);
+      const isHoliday = state.holidays && state.holidays[dateStr];
       slots.push({
-        start: toDateString(slotStart),
+        start: dateStr,
         end: toDateString(slotEnd),
-        label: scale === 'day' ? toDateString(slotStart).slice(5).replace('-', '/') : toDateString(slotStart).slice(0, 7)
+        label: scale === 'day' ? dateStr.slice(5).replace('-', '/') : dateStr.slice(0, 7),
+        isHoliday: isHoliday,
+        dayOfWeek: slotStart.getDay()
       });
       current.setTime(slotEnd.getTime());
       current.setDate(current.getDate() + 1);
@@ -915,7 +1350,10 @@
   }
 
   function toDateString(date) {
-    return date.toISOString().slice(0, 10);
+    const y = date.getFullYear();
+    const m = ('0' + (date.getMonth() + 1)).slice(-2);
+    const d = ('0' + date.getDate()).slice(-2);
+    return `${y}-${m}-${d}`;
   }
 
   function renderLoading(message) {
@@ -1060,23 +1498,36 @@
 
   function submitIssueCommentEdit(event) {
     event.preventDefault();
-    renderModalBusy();
+    const data = formToObject(event.target);
+    const idx = (state.activeProject.issueComments || []).findIndex(t => t.comment_id === data.comment_id);
+    if (idx >= 0) state.activeProject.issueComments[idx].comment = data.comment;
+    closeModal();
+    state.view = 'issues';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
-      closeModal();
-      state.view = 'issues';
       render();
-    }).withFailureHandler(renderModalError).updateIssueComment(formToObject(event.target));
+    }).withFailureHandler((err) => {
+      alert('コメントの更新に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).updateIssueComment(data);
   }
 
   function deleteIssueComment(commentId) {
     if (!confirm('このコメントを削除しますか？')) return;
-    renderLoading('コメントを削除しています');
+    const idx = (state.activeProject.issueComments || []).findIndex(t => t.comment_id === commentId);
+    if (idx >= 0) state.activeProject.issueComments.splice(idx, 1);
+    state.view = 'issues';
+    render();
+
     google.script.run.withSuccessHandler((project) => {
       state.activeProject = project;
-      state.view = 'issues';
       render();
-    }).withFailureHandler(renderError).deleteIssueComment(commentId);
+    }).withFailureHandler((err) => {
+      alert('コメントの削除に失敗しました。再読み込みします。\n' + (err.message || err));
+      openProject(state.activeProject.project.project_id);
+    }).deleteIssueComment(commentId);
   }
 
   function archiveDeletedProject(projectId) {

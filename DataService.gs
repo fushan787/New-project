@@ -2,8 +2,8 @@ const HEADERS = {
   Projects: ['project_id', 'project_name', 'client_name', 'status', 'start_date', 'end_date', 'owner_email', 'created_at', 'updated_at', 'deleted'],
   Members: ['project_id', 'user_email', 'role', 'active'],
   Phases: ['phase_id', 'project_id', 'phase_name', 'planned_start', 'planned_end', 'actual_start', 'actual_end', 'progress_percent', 'status', 'assignee_email', 'sort_order', 'deleted'],
-  Tasks: ['task_id', 'phase_id', 'task_name', 'planned_start', 'planned_end', 'actual_start', 'actual_end', 'progress_percent', 'status', 'priority', 'blocked_reason', 'depends_on', 'assignee_email', 'created_at', 'updated_at', 'deleted'],
-  Issues: ['issue_id', 'project_id', 'title', 'severity', 'status', 'owner_email', 'due_date', 'created_at', 'updated_at', 'deleted'],
+  Tasks: ['task_id', 'phase_id', 'task_name', 'planned_start', 'planned_end', 'actual_start', 'actual_end', 'progress_percent', 'status', 'priority', 'blocked_reason', 'depends_on', 'assignee_email', 'summary', 'created_at', 'updated_at', 'deleted'],
+  Issues: ['issue_id', 'project_id', 'title', 'severity', 'status', 'owner_email', 'due_date', 'summary', 'created_at', 'updated_at', 'deleted'],
   AuditLogs: ['timestamp', 'user_email', 'action', 'target_type', 'target_id', 'before', 'after'],
   IssueComments: ['comment_id', 'issue_id', 'user_email', 'comment', 'created_at', 'updated_at', 'deleted'],
   Archives: ['archive_id', 'project_id', 'project_name', 'archived_at', 'archived_by', 'snapshot'],
@@ -92,7 +92,6 @@ function getDeletedProjectsForUser(email) {
 }
 
 function getProjectDetail(projectId) {
-  recalculatePhaseProgress(projectId);
 
   const project = findRecordById(SHEETS.projects, 'project_id', projectId);
   if (!project) {
